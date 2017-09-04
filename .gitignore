@@ -1,6 +1,6 @@
 # Other
 .DS_Store
-api
+api/
 
 # Logs
 logs
