@@ -1,15 +1,17 @@
 var express = require('express');
 var fs = require('fs')
 var Promise = require('bluebird')
+var bodyParser = require('body-parser')
 var Ajv = require('ajv')
 var ajv = new Ajv({allErrors: true})
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_ROOT = '/api'
+const DEFAULT_DOCS = '/docs'
 var routeMap = {}
 
 exports.start = (directory, app, port=DEFAULT_PORT) => {
-    console.log('😛 Your API is starting...')
+    console.log('Your API is starting... ☀️')
 
     try {
         fs.statSync(directory + '/api')
@@ -20,28 +22,44 @@ exports.start = (directory, app, port=DEFAULT_PORT) => {
         return
     }
     
+    app.use(bodyParser.json()); // support json encoded bodies
+    app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+
     var apiPath = directory + '/api'
     buildRouteMap(apiPath, app)
+    
+    // boring docs here
+    app.get(DEFAULT_DOCS, (req, res) => {
+        res.header("Content-Type", 'application/json');
+        res.send(JSON.stringify(routeMap, null, 4))
+    })
+
+    app.get('/docs/refresh', (req, res) => {
+        buildRouteMap(apiPath, app)
+    })
+
     // catch 404 and forward to error handler
     app.use(function (req, res, next) {
         var err = new Error('Not Found');
         err.status = 404;
         next(err);
     });
+    
     // error handler
-    app.use(function (err, req, res, next) {
+    app.use(function (error, req, res, next) {
         // set locals, only providing error in development
-        res.locals.message = err.message;
-        res.locals.error = req.app.get('env') === 'development' ? err : {};
+        res.locals.message = error.message;
+        res.locals.error = req.app.get('env') === 'development' ? error : {};
 
         // render the error page
-        res.status(err.status || 500);
-        res.send('Error: ' + err)
+        res.status(error.status || 500);
+        res.json({error})
     });
 
-    app.listen(port, () => [
+    // TODO: have this listen on other ip addresses
+    app.listen(port, () => {
         console.log("You're good to go on " + port)
-    ])
+    })
 
 }
 
@@ -65,11 +83,11 @@ var buildRouteMap = (dir, app) => {
     f = getFiles(dir)
     // cleaning things up a bit...
     for (var i in f) {
-        var base = f[i]
+        var basePath = f[i]
         try {
-            routes = require(base + '/routes.js')
+            routes = require(basePath + '/routes.js')
             try {
-                schemas = require(base + '/schemas.js')
+                schemas = require(basePath + '/schemas.js')
             }
             catch (error) {
                 schemas = {}
@@ -77,29 +95,30 @@ var buildRouteMap = (dir, app) => {
         }
         catch (error) {
             console.error(error)
-            throw "Missing a routes or schema file at " + base
+            throw "Missing a routes file at " + basePath
         }
-        routePath = base.replace(dir, '')
+        routePath = basePath.replace(dir, '')
 
+        if (routePath == '') routePath = '/';
         // process route.js for each route
         Object.keys(routes).forEach(method => {
             var methodDefinition = routes[method]
             var schemaDefinition = schemas[method] || {}
+            
+            // setting the schema to be empty otherwise
+            schemaDefinition.in = schemaDefinition.in || {}
+            schemaDefinition.out = schemaDefinition.out || {}
+            
+            addToRouteMap(routePath, method, schemaDefinition)
 
             app[method](routePath, (req, res, next) => {
                 handleMethod(methodDefinition, schemaDefinition, req)
                     .then(response => {
                         return res.json({response})
                     })
-                    .catch(error => {
-                        return next(error)
-                    })
+                    .catch(next)
             })
         })
-
-        // empty directories without a routes.js
-
-        // files that don't match (ignored files)
     }
 }
 
@@ -121,11 +140,14 @@ var handleMethod = (methodDefinition, schemaDefinition, req) => {
 }
 
 var collectParams = (req) => {
-    return Object.assign({}, req.query, req.parms, req.body)
+    return Object.assign({}, req.query, req.params, req.body)
 }
 
-// TODO: functions that 1. process the route.js
+var addToRouteMap = (route, method, schema) => {
+    if (!routeMap[route]) {
+        routeMap[route] = {}
+    }
+    routeMap[route][method] = {in: schema.in, out: schema.out}
+}
 
-// TODO: function to create route map json
-
-// TODO: docs builder
+// TODO: docs builde
