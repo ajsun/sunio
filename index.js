@@ -8,7 +8,10 @@ var ajv = new Ajv({allErrors: true})
 const DEFAULT_PORT = 8080;
 const DEFAULT_ROOT = '/api'
 const DEFAULT_DOCS = '/docs'
+const DEFAULT_TOKEN_HEADER = 'sunio-token'
 var routeMap = {}
+
+var authMethod = null
 
 exports.start = (directory, app, port=DEFAULT_PORT) => {
     console.log('Your API is starting... ☀️')
@@ -16,12 +19,11 @@ exports.start = (directory, app, port=DEFAULT_PORT) => {
     try {
         fs.statSync(directory + '/api')
     } catch (e) {
-        console.log(e)
         console.error(directory + '/api does not exist')
         console.error('Usage: You must keep all api files in /api')
         return
     }
-    
+
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
 
@@ -47,6 +49,7 @@ exports.start = (directory, app, port=DEFAULT_PORT) => {
     
     // error handler
     app.use(function (error, req, res, next) {
+        console.log(error)
         // set locals, only providing error in development
         res.locals.message = error.message;
         res.locals.error = req.app.get('env') === 'development' ? error : {};
@@ -63,6 +66,10 @@ exports.start = (directory, app, port=DEFAULT_PORT) => {
 
 }
 
+exports.setAuthMethod = (method) => {
+    authMethod = method
+}
+
 // function recursively travels through a directory and returns the list of all files
 var getFiles = (dir, _files=[dir]) => {
     var files = fs.readdirSync(dir) 
@@ -72,9 +79,7 @@ var getFiles = (dir, _files=[dir]) => {
             _files.push(path)
             getFiles(path, _files)
         }
-        // else {
-        //     _files.push(path)
-        // }
+
     }
     return _files
 }
@@ -84,7 +89,7 @@ var buildRouteMap = (dir, app) => {
     // cleaning things up a bit...
     for (var i in f) {
         var basePath = f[i]
-        try {
+        if (fs.existsSync(basePath + '/routes.js')) {
             routes = require(basePath + '/routes.js')
             try {
                 schemas = require(basePath + '/schemas.js')
@@ -92,10 +97,6 @@ var buildRouteMap = (dir, app) => {
             catch (error) {
                 schemas = {}
             }
-        }
-        catch (error) {
-            console.error(error)
-            throw "Missing a routes file at " + basePath
         }
         routePath = basePath.replace(dir, '')
 
@@ -124,12 +125,21 @@ var buildRouteMap = (dir, app) => {
 
 var handleMethod = (methodDefinition, schemaDefinition, req) => {
     var params = collectParams(req)
-    var valid = ajv.validate(schemaDefinition.in, params)
-    if (!valid) {
-        return Promise.reject(ajv.errors[0].message)
-    }
-    return Promise.resolve()   
-            .then(() => methodDefinition(params, req))
+    var auth = getTokenFromHeaders(req)
+
+    return Promise.resolve()
+            .then(() => {
+                var valid = ajv.validate(schemaDefinition.in, params)
+                if (!valid) {
+                    throw ajv.errors[0].message
+                }
+            
+                if (schemaDefinition.auth_required && !auth) {
+                    res.status(401).send('You must be authenticated to use this service')
+                }
+
+            })
+            .then(() => methodDefinition(params, auth, req))
             .then(result => {
                 var valid = ajv.validate(schemaDefinition.out, result)
                 if (!valid) {
@@ -141,6 +151,22 @@ var handleMethod = (methodDefinition, schemaDefinition, req) => {
 
 var collectParams = (req) => {
     return Object.assign({}, req.query, req.params, req.body)
+}
+
+var getTokenFromHeaders = (req) => {
+    var userToken = req.get(DEFAULT_TOKEN_HEADER)
+    if (userToken) {
+        if (authMethod) {
+            try {
+                var auth = authMethod(userToken)
+                return auth
+            }
+            catch (e) {
+                return null
+            }
+        }
+    }
+    return null
 }
 
 var addToRouteMap = (route, method, schema) => {
